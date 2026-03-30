@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "speech_to_latex_extension",
+  "version": "1.0",
+  "permissions": ["activeTab", "scripting"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.overleaf.com/project/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ]
+}
