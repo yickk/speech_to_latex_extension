@@ -4,23 +4,25 @@ recognition.continuous = true;
 recognition.interimResults = false;
 recognition.lang = 'en-US';
 
+console.log("Extension content script loaded!");
+
 // 2. The Logic to Inject LaTeX into Overleaf
 function injectLatex(text) {
-    // Overleaf uses Ace Editor. We need to dispatch a 'paste' event
-    // because it's the most reliable way to insert at the cursor
-    // without breaking Overleaf's internal "undo" history.
-    const textEvent = new ClipboardEvent('paste', {
-        clipboardData: new DataTransfer(),
-        bubbles: true,
-        cancelable: true
-    });
-    textEvent.clipboardData.setData('text/plain', text);
+    // Debugging: What CAN we see?
+    console.log("Textareas found:", document.querySelectorAll('textarea').length);
+    console.log("Inputs found:", document.querySelectorAll('input').length);
+    // Look for the standard Ace input, or the new CodeMirror-style input
+    const el = document.querySelector('.ace_text-input') ||
+               document.querySelector('textarea.cm-content') ||
+               document.querySelector('[role="textbox"]');
 
-    // Target the Ace text input layer
-    const el = document.querySelector('.ace_text-input');
     if (el) {
         el.focus();
-        el.dispatchEvent(textEvent);
+        // This is the most modern way to 'type' into a web editor
+        document.execCommand('insertText', false, text);
+        console.log("Success! Injected:", text);
+    } else {
+        console.error("Still can't find it. Let's look at the page structure.");
     }
 }
 
