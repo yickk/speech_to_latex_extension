@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Speech → LaTeX options</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 1.5rem auto; padding: 0 1rem; }
+    label { display: block; font-weight: 600; margin-bottom: 0.35rem; }
+    input[type="password"], input[type="text"] {
+      width: 100%; box-sizing: border-box; padding: 0.5rem; font: inherit;
+    }
+    button { margin-top: 0.75rem; padding: 0.45rem 1rem; font: inherit; cursor: pointer; }
+    p.hint { color: #444; font-size: 0.9rem; margin-top: 0.35rem; }
+    hr { margin: 1.5rem 0; border: none; border-top: 1px solid #ccc; }
+    #status { margin-top: 0.75rem; font-size: 0.9rem; }
+    #status.ok { color: #0a7f2e; }
+    #status.err { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>Speech → LaTeX</h1>
+  <p class="hint">Keys are stored only in this browser (extension local storage). OpenAI enables Whisper speech-to-text; Gemini converts the transcript to LaTeX. If an OpenAI key is set, Alt+S records from the mic and uses Whisper. Otherwise the browser’s built-in speech recognition is used.</p>
+
+  <label for="openaiKey">OpenAI API key (Whisper)</label>
+  <input id="openaiKey" type="password" autocomplete="off" spellcheck="false" />
+  <button type="button" id="showOpenai">Show / hide OpenAI key</button>
+
+  <hr />
+
+  <label for="geminiKey">Gemini API key (LaTeX)</label>
+  <input id="geminiKey" type="password" autocomplete="off" spellcheck="false" />
+  <button type="button" id="showGemini">Show / hide Gemini key</button>
+
+  <button type="button" id="save">Save keys</button>
+  <div id="status" role="status"></div>
+  <script src="options.js"></script>
+</body>
+</html>

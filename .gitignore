@@ -1,0 +1,17 @@
+# Local env / secrets (never commit real keys)
+.env
+.env.*
+!.env.example
+
+# Optional local overrides
+secrets.json
+*.secrets.json
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+
+# Python / tooling (if added later)
+__pycache__/
+.venv/
