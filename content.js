@@ -13,26 +13,69 @@ function injectLatex(text) {
   document.execCommand("insertText", false, text);
 }
 
-/** When true, Alt+S records mic audio and uses OpenAI Whisper; otherwise Web Speech API. */
-let useWhisper = false;
+function toast(msg) {
+  let el = document.getElementById("speech-latex-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "speech-latex-toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add("visible");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove("visible"), 3500);
+}
 
-function refreshWhisperPreference() {
-  chrome.storage.local.get(["openaiApiKey"], (d) => {
+function updateCaptureToggleUI() {
+  const btn = document.getElementById("speech-latex-toggle");
+  if (!btn) return;
+  const active = useMicCapture ? whisperRecording : speechListening;
+  btn.textContent = active ? "Stop dictation" : "Start dictation";
+  btn.setAttribute("aria-pressed", active ? "true" : "false");
+  btn.classList.toggle("recording", active);
+}
+
+function ensureCaptureToggleButton() {
+  if (document.getElementById("speech-latex-toggle")) {
+    updateCaptureToggleUI();
+    return;
+  }
+  const btn = document.createElement("button");
+  btn.id = "speech-latex-toggle";
+  btn.type = "button";
+  btn.className = "speech-latex-toggle";
+  btn.setAttribute("aria-label", "Toggle speech to LaTeX dictation");
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSpeechCapture();
+  });
+  document.body.appendChild(btn);
+  updateCaptureToggleUI();
+}
+
+/** When true, Alt+S records mic audio and sends it to Gemini for LaTeX; otherwise Web Speech API. */
+let useMicCapture = false;
+
+function refreshMicPreference() {
+  chrome.storage.local.get(["geminiApiKey"], (d) => {
     if (chrome.runtime.lastError) return;
-    useWhisper = !!(d.openaiApiKey && String(d.openaiApiKey).trim());
+    useMicCapture = !!(d.geminiApiKey && String(d.geminiApiKey).trim());
+    updateCaptureToggleUI();
   });
 }
 
-refreshWhisperPreference();
+refreshMicPreference();
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.openaiApiKey) {
-    useWhisper = !!(
-      changes.openaiApiKey.newValue && String(changes.openaiApiKey.newValue).trim()
+  if (area === "local" && changes.geminiApiKey) {
+    useMicCapture = !!(
+      changes.geminiApiKey.newValue && String(changes.geminiApiKey.newValue).trim()
     );
+    updateCaptureToggleUI();
   }
 });
 
-// --- OpenAI Whisper path (MediaRecorder → background) ---
+// --- Mic recording (MediaRecorder → Gemini multimodal) ---
 
 let whisperRecording = false;
 let mediaStream = null;
@@ -57,6 +100,7 @@ async function startWhisperRecording() {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
     console.error("Speech→LaTeX: microphone denied or unavailable.", e);
+    updateCaptureToggleUI();
     return;
   }
   mediaChunks = [];
@@ -69,6 +113,7 @@ async function startWhisperRecording() {
     mediaStream.getTracks().forEach((t) => t.stop());
     mediaStream = null;
     console.error("Speech→LaTeX: could not start MediaRecorder.", e);
+    updateCaptureToggleUI();
     return;
   }
   mediaRecorder.ondataavailable = (e) => {
@@ -76,12 +121,15 @@ async function startWhisperRecording() {
   };
   mediaRecorder.start();
   whisperRecording = true;
-  console.log("Speech→LaTeX: recording for Whisper… Press Alt+S again to stop and transcribe.");
+  updateCaptureToggleUI();
+  toast("Recording… click Stop dictation or Alt+S to send audio to Gemini.");
+  console.log("Speech→LaTeX: recording… Press Alt+S or Stop again to finish.");
 }
 
 function stopWhisperAndSend() {
   if (!whisperRecording || !mediaRecorder) return;
   whisperRecording = false;
+  updateCaptureToggleUI();
   const rec = mediaRecorder;
   const stream = mediaStream;
   mediaRecorder = null;
@@ -98,6 +146,8 @@ function stopWhisperAndSend() {
       return;
     }
 
+    toast("Transcribing and converting to LaTeX…");
+
     const reader = new FileReader();
     reader.onloadend = () => {
       const dataUrl = reader.result;
@@ -111,13 +161,16 @@ function stopWhisperAndSend() {
         (response) => {
           if (chrome.runtime.lastError) {
             console.error(chrome.runtime.lastError.message);
+            toast("Extension error — check console.");
             return;
           }
           if (response?.ok && response.latex) {
-            injectLatex(response.latex);
+            injectLatex(response.latex + " ");
+            toast("Inserted LaTeX.");
           } else {
             console.warn("Speech→LaTeX:", response?.message || response?.error || "Unknown error");
-            if (response?.transcript) injectLatex(response.transcript);
+            toast(response?.message || "Could not get LaTeX.");
+            if (response?.transcript) injectLatex(response.transcript + " ");
           }
         }
       );
@@ -139,6 +192,18 @@ const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRec
 let recognition = null;
 let speechListening = false;
 
+function localVibeLatex(transcript) {
+  const latex = transcript
+    .trim()
+    .toLowerCase()
+    .replace(/fraction/g, "\\frac{}{}")
+    .replace(/square root/g, "\\sqrt{}")
+    .replace(/alpha/g, "\\alpha")
+    .replace(/section/g, "\\section{}")
+    .replace(/begin equation/g, "\\begin{equation}\n\n\\end{equation}");
+  return latex + " ";
+}
+
 if (SpeechRecognitionCtor) {
   recognition = new SpeechRecognitionCtor();
   recognition.continuous = true;
@@ -147,10 +212,12 @@ if (SpeechRecognitionCtor) {
 
   recognition.onend = () => {
     speechListening = false;
+    updateCaptureToggleUI();
   };
 
   recognition.onerror = (event) => {
     speechListening = false;
+    updateCaptureToggleUI();
     console.error("Speech recognition error:", event.error);
   };
 
@@ -158,22 +225,27 @@ if (SpeechRecognitionCtor) {
     const transcript = event.results[event.results.length - 1][0].transcript;
     console.log("Speech→LaTeX transcript:", transcript);
 
-    chrome.runtime.sendMessage(
-      { type: "CONVERT_SPEECH_TO_LATEX", transcript },
-      (response) => {
+    chrome.storage.local.get(["geminiApiKey"], (d) => {
+      const hasKey = !!(d.geminiApiKey && String(d.geminiApiKey).trim());
+      if (!hasKey) {
+        injectLatex(localVibeLatex(transcript));
+        return;
+      }
+
+      chrome.runtime.sendMessage({ type: "CONVERT_SPEECH_TO_LATEX", transcript }, (response) => {
         if (chrome.runtime.lastError) {
           console.error(chrome.runtime.lastError.message);
-          injectLatex(transcript);
+          injectLatex(transcript + " ");
           return;
         }
         if (response?.ok && response.latex) {
-          injectLatex(response.latex);
+          injectLatex(response.latex + " ");
         } else {
           console.warn("Speech→LaTeX:", response?.message || response?.error || "Unknown error");
-          injectLatex(transcript);
+          injectLatex(transcript + " ");
         }
-      }
-    );
+      });
+    });
   };
 }
 
@@ -182,10 +254,13 @@ function startSpeechListening() {
   try {
     recognition.start();
     speechListening = true;
+    updateCaptureToggleUI();
+    toast("Listening… click Stop dictation or Alt+S to stop.");
     console.log("Speech→LaTeX: Web Speech listening… Press Alt+S again to stop.");
   } catch (err) {
     if (err?.name === "InvalidStateError") {
       speechListening = true;
+      updateCaptureToggleUI();
       return;
     }
     console.error("Speech→LaTeX: could not start recognition:", err);
@@ -200,22 +275,34 @@ function stopSpeechListening() {
     if (err?.name !== "InvalidStateError") console.error("Speech→LaTeX:", err);
   }
   speechListening = false;
+  updateCaptureToggleUI();
+}
+
+function toggleSpeechCapture() {
+  if (useMicCapture) {
+    if (whisperRecording) stopWhisperAndSend();
+    else void startWhisperRecording();
+    return;
+  }
+
+  if (!recognition) {
+    toast(
+      "Speech recognition unavailable. Add a Gemini API key in extension options to record from the mic."
+    );
+    console.error(
+      "Speech→LaTeX: Web Speech API not available. Add a Gemini key in options to use mic capture."
+    );
+    return;
+  }
+
+  if (speechListening) stopSpeechListening();
+  else startSpeechListening();
 }
 
 window.addEventListener("keydown", (e) => {
   if (!e.altKey || e.code !== "KeyS" || e.repeat) return;
   e.preventDefault();
-
-  if (useWhisper) {
-    if (whisperRecording) stopWhisperAndSend();
-    else startWhisperRecording();
-    return;
-  }
-
-  if (!recognition) {
-    console.error("Speech→LaTeX: Web Speech API not available. Add an OpenAI key to use Whisper.");
-    return;
-  }
-  if (speechListening) stopSpeechListening();
-  else startSpeechListening();
+  toggleSpeechCapture();
 });
+
+ensureCaptureToggleButton();

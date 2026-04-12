@@ -1,0 +1,44 @@
+#speech-latex-toast {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 2147483647;
+  max-width: 22rem;
+  padding: 0.5rem 0.75rem;
+  font: 13px/1.35 system-ui, sans-serif;
+  color: #fff;
+  background: rgba(20, 20, 24, 0.92);
+  border-radius: 6px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+#speech-latex-toast.visible {
+  opacity: 1;
+}
+
+button.speech-latex-toggle {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 2147483647;
+  padding: 0.5rem 0.85rem;
+  font: 13px/1.2 system-ui, sans-serif;
+  font-weight: 600;
+  color: #fff;
+  background: #138636;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+button.speech-latex-toggle:hover {
+  filter: brightness(1.06);
+}
+
+button.speech-latex-toggle.recording {
+  background: #b00020;
+}
