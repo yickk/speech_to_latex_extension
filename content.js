@@ -1,3 +1,45 @@
+function hasMathDelimitersOrEnvironment(text) {
+  if (!text) return false;
+  if (/\\\(|\\\)|\\\[|\\\]/.test(text)) return true;
+  if (/\$\$[\s\S]*\$\$/.test(text)) return true;
+  if (/(^|[^$])\$[^$][\s\S]*?[^$]\$(?!\$)/.test(text)) return true;
+  if (
+    /\\begin\{(?:equation\*?|align\*?|gather\*?|multline\*?|displaymath|math|bmatrix|pmatrix|vmatrix|matrix|cases|aligned)\}/.test(
+      text
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function looksLikeMathLatex(text) {
+  if (!text) return false;
+  if (/\\(frac|sqrt|sum|int|lim|sin|cos|tan|log|ln|alpha|beta|gamma|theta|pi|cdot|times|pm|leq|geq|neq|approx|left|right)\b/.test(text)) {
+    return true;
+  }
+  if (/[_^]/.test(text)) return true;
+  if (/\b-?\d+\s*\/\s*-?\d+\b/.test(text)) return true;
+  if (/\b-?\d+(?:\.\d+)?\s*(?:=|<|>|\\leq|\\geq)\s*-?\d+(?:\.\d+)?\b/.test(text)) return true;
+  return false;
+}
+
+function ensureMathMode(text) {
+  const source = typeof text === "string" ? text : "";
+  if (!source.trim()) return source;
+  if (hasMathDelimitersOrEnvironment(source)) return source;
+  if (!looksLikeMathLatex(source)) return source;
+
+  const trailingWhitespaceMatch = source.match(/\s+$/);
+  const trailingWhitespace = trailingWhitespaceMatch ? trailingWhitespaceMatch[0] : "";
+  const core = source.slice(0, source.length - trailingWhitespace.length).trim();
+  if (!core) return source;
+
+  const needsDisplayMath = core.includes("\n") || /\\\\/.test(core) || /\\begin\{(?:aligned|cases)\}/.test(core);
+  const wrapped = needsDisplayMath ? `$$${core}$$` : `$${core}$`;
+  return wrapped + trailingWhitespace;
+}
+
 function injectLatex(text) {
   const el =
     document.querySelector(".ace_text-input") ||
@@ -10,7 +52,7 @@ function injectLatex(text) {
   }
 
   el.focus();
-  document.execCommand("insertText", false, text);
+  document.execCommand("insertText", false, ensureMathMode(text));
 }
 
 function toast(msg) {
@@ -192,10 +234,137 @@ const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRec
 let recognition = null;
 let speechListening = false;
 
+const SPOKEN_NUMBER_UNITS = {
+  zero: 0,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+};
+
+const SPOKEN_NUMBER_TENS = {
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+};
+
+const SPOKEN_DENOMINATORS = {
+  half: 2,
+  halves: 2,
+  third: 3,
+  thirds: 3,
+  fourth: 4,
+  fourths: 4,
+  quarter: 4,
+  quarters: 4,
+  fifth: 5,
+  fifths: 5,
+  sixth: 6,
+  sixths: 6,
+  seventh: 7,
+  sevenths: 7,
+  eighth: 8,
+  eighths: 8,
+  ninth: 9,
+  ninths: 9,
+  tenth: 10,
+  tenths: 10,
+  eleventh: 11,
+  elevenths: 11,
+  twelfth: 12,
+  twelfths: 12,
+};
+
+function parseSpokenNumber(raw) {
+  const text = String(raw || "").trim().toLowerCase().replace(/-/g, " ");
+  if (!text) return null;
+  if (/^-?\d+$/.test(text)) return Number(text);
+
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return null;
+
+  let sign = 1;
+  let idx = 0;
+  if (tokens[0] === "negative" || tokens[0] === "minus") {
+    sign = -1;
+    idx = 1;
+  }
+
+  let value = 0;
+  let used = false;
+  for (; idx < tokens.length; idx += 1) {
+    const t = tokens[idx];
+    if (t === "and") continue;
+    if (Object.prototype.hasOwnProperty.call(SPOKEN_NUMBER_UNITS, t)) {
+      value += SPOKEN_NUMBER_UNITS[t];
+      used = true;
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(SPOKEN_NUMBER_TENS, t)) {
+      value += SPOKEN_NUMBER_TENS[t];
+      used = true;
+      continue;
+    }
+    return null;
+  }
+
+  if (!used) return null;
+  return sign * value;
+}
+
+function parseSpokenDenominator(raw) {
+  const text = String(raw || "").trim().toLowerCase().replace(/-/g, " ");
+  if (!text) return null;
+  if (Object.prototype.hasOwnProperty.call(SPOKEN_DENOMINATORS, text)) {
+    return SPOKEN_DENOMINATORS[text];
+  }
+  return parseSpokenNumber(text);
+}
+
+function buildFractionFromSpeech(numRaw, denRaw) {
+  const num = parseSpokenNumber(numRaw);
+  const den = parseSpokenDenominator(denRaw);
+  if (num == null || den == null || den === 0) return null;
+  return `\\frac{${num}}{${den}}`;
+}
+
 function localVibeLatex(transcript) {
-  const latex = transcript
-    .trim()
-    .toLowerCase()
+  const normalized = transcript.trim().toLowerCase();
+  const latex = normalized
+    .replace(
+      /\bfraction\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\s+([a-z-]+(?:s)?)\b/g,
+      (match, numRaw, denRaw) => buildFractionFromSpeech(numRaw, denRaw) || match
+    )
+    .replace(/fraction\s+(-?\d+)\s*\/\s*(-?\d+)/g, "\\frac{$1}{$2}")
+    .replace(/fraction\s+(-?\d+)\s+over\s+(-?\d+)/g, "\\frac{$1}{$2}")
+    .replace(
+      /\bfraction\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\s+over\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/g,
+      (match, numRaw, denRaw) => buildFractionFromSpeech(numRaw, denRaw) || match
+    )
+    .replace(
+      /\b([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\s+over\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/g,
+      (match, numRaw, denRaw) => buildFractionFromSpeech(numRaw, denRaw) || match
+    )
     .replace(/fraction/g, "\\frac{}{}")
     .replace(/square root/g, "\\sqrt{}")
     .replace(/alpha/g, "\\alpha")
