@@ -71,10 +71,9 @@ function toast(msg) {
 function updateCaptureToggleUI() {
   const btn = document.getElementById("speech-latex-toggle");
   if (!btn) return;
-  const active = useMicCapture ? whisperRecording : speechListening;
-  btn.textContent = active ? "Stop dictation" : "Start dictation";
-  btn.setAttribute("aria-pressed", active ? "true" : "false");
-  btn.classList.toggle("recording", active);
+  btn.textContent = isRecording ? "Stop dictation" : "Start dictation";
+  btn.setAttribute("aria-pressed", isRecording ? "true" : "false");
+  btn.classList.toggle("recording", isRecording);
 }
 
 function ensureCaptureToggleButton() {
@@ -96,30 +95,10 @@ function ensureCaptureToggleButton() {
   updateCaptureToggleUI();
 }
 
-/** When true, Alt+S records mic audio and sends it to Gemini for LaTeX; otherwise Web Speech API. */
-let useMicCapture = false;
 
-function refreshMicPreference() {
-  chrome.storage.local.get(["geminiApiKey"], (d) => {
-    if (chrome.runtime.lastError) return;
-    useMicCapture = !!(d.geminiApiKey && String(d.geminiApiKey).trim());
-    updateCaptureToggleUI();
-  });
-}
+// --- Audio recording (MediaRecorder → Gemini multimodal) ---
 
-refreshMicPreference();
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.geminiApiKey) {
-    useMicCapture = !!(
-      changes.geminiApiKey.newValue && String(changes.geminiApiKey.newValue).trim()
-    );
-    updateCaptureToggleUI();
-  }
-});
-
-// --- Mic recording (MediaRecorder → Gemini multimodal) ---
-
-let whisperRecording = false;
+let isRecording = false;
 let mediaStream = null;
 let mediaRecorder = null;
 let mediaChunks = [];
@@ -132,8 +111,8 @@ function pickAudioMimeType() {
   return "";
 }
 
-async function startWhisperRecording() {
-  if (whisperRecording) return;
+async function startRecording() {
+  if (isRecording) return;
   if (typeof MediaRecorder === "undefined") {
     console.error("Speech→LaTeX: MediaRecorder not available.");
     return;
@@ -162,15 +141,15 @@ async function startWhisperRecording() {
     if (e.data && e.data.size > 0) mediaChunks.push(e.data);
   };
   mediaRecorder.start();
-  whisperRecording = true;
+  isRecording = true;
   updateCaptureToggleUI();
   toast("Recording… click Stop dictation or Alt+S to send audio to Gemini.");
   console.log("Speech→LaTeX: recording… Press Alt+S or Stop again to finish.");
 }
 
-function stopWhisperAndSend() {
-  if (!whisperRecording || !mediaRecorder) return;
-  whisperRecording = false;
+function stopRecordingAndSend() {
+  if (!isRecording || !mediaRecorder) return;
+  isRecording = false;
   updateCaptureToggleUI();
   const rec = mediaRecorder;
   const stream = mediaStream;
@@ -228,244 +207,23 @@ function stopWhisperAndSend() {
   }
 }
 
-// --- Web Speech API path ---
-
-const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
-let recognition = null;
-let speechListening = false;
-
-const SPOKEN_NUMBER_UNITS = {
-  zero: 0,
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-  seven: 7,
-  eight: 8,
-  nine: 9,
-  ten: 10,
-  eleven: 11,
-  twelve: 12,
-  thirteen: 13,
-  fourteen: 14,
-  fifteen: 15,
-  sixteen: 16,
-  seventeen: 17,
-  eighteen: 18,
-  nineteen: 19,
-};
-
-const SPOKEN_NUMBER_TENS = {
-  twenty: 20,
-  thirty: 30,
-  forty: 40,
-  fifty: 50,
-  sixty: 60,
-  seventy: 70,
-  eighty: 80,
-  ninety: 90,
-};
-
-const SPOKEN_DENOMINATORS = {
-  half: 2,
-  halves: 2,
-  third: 3,
-  thirds: 3,
-  fourth: 4,
-  fourths: 4,
-  quarter: 4,
-  quarters: 4,
-  fifth: 5,
-  fifths: 5,
-  sixth: 6,
-  sixths: 6,
-  seventh: 7,
-  sevenths: 7,
-  eighth: 8,
-  eighths: 8,
-  ninth: 9,
-  ninths: 9,
-  tenth: 10,
-  tenths: 10,
-  eleventh: 11,
-  elevenths: 11,
-  twelfth: 12,
-  twelfths: 12,
-};
-
-function parseSpokenNumber(raw) {
-  const text = String(raw || "").trim().toLowerCase().replace(/-/g, " ");
-  if (!text) return null;
-  if (/^-?\d+$/.test(text)) return Number(text);
-
-  const tokens = text.split(/\s+/).filter(Boolean);
-  if (!tokens.length) return null;
-
-  let sign = 1;
-  let idx = 0;
-  if (tokens[0] === "negative" || tokens[0] === "minus") {
-    sign = -1;
-    idx = 1;
-  }
-
-  let value = 0;
-  let used = false;
-  for (; idx < tokens.length; idx += 1) {
-    const t = tokens[idx];
-    if (t === "and") continue;
-    if (Object.prototype.hasOwnProperty.call(SPOKEN_NUMBER_UNITS, t)) {
-      value += SPOKEN_NUMBER_UNITS[t];
-      used = true;
-      continue;
-    }
-    if (Object.prototype.hasOwnProperty.call(SPOKEN_NUMBER_TENS, t)) {
-      value += SPOKEN_NUMBER_TENS[t];
-      used = true;
-      continue;
-    }
-    return null;
-  }
-
-  if (!used) return null;
-  return sign * value;
-}
-
-function parseSpokenDenominator(raw) {
-  const text = String(raw || "").trim().toLowerCase().replace(/-/g, " ");
-  if (!text) return null;
-  if (Object.prototype.hasOwnProperty.call(SPOKEN_DENOMINATORS, text)) {
-    return SPOKEN_DENOMINATORS[text];
-  }
-  return parseSpokenNumber(text);
-}
-
-function buildFractionFromSpeech(numRaw, denRaw) {
-  const num = parseSpokenNumber(numRaw);
-  const den = parseSpokenDenominator(denRaw);
-  if (num == null || den == null || den === 0) return null;
-  return `\\frac{${num}}{${den}}`;
-}
-
-function localVibeLatex(transcript) {
-  const normalized = transcript.trim().toLowerCase();
-  const latex = normalized
-    .replace(
-      /\bfraction\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\s+([a-z-]+(?:s)?)\b/g,
-      (match, numRaw, denRaw) => buildFractionFromSpeech(numRaw, denRaw) || match
-    )
-    .replace(/fraction\s+(-?\d+)\s*\/\s*(-?\d+)/g, "\\frac{$1}{$2}")
-    .replace(/fraction\s+(-?\d+)\s+over\s+(-?\d+)/g, "\\frac{$1}{$2}")
-    .replace(
-      /\bfraction\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\s+over\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/g,
-      (match, numRaw, denRaw) => buildFractionFromSpeech(numRaw, denRaw) || match
-    )
-    .replace(
-      /\b([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\s+over\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b/g,
-      (match, numRaw, denRaw) => buildFractionFromSpeech(numRaw, denRaw) || match
-    )
-    .replace(/fraction/g, "\\frac{}{}")
-    .replace(/square root/g, "\\sqrt{}")
-    .replace(/alpha/g, "\\alpha")
-    .replace(/section/g, "\\section{}")
-    .replace(/begin equation/g, "\\begin{equation}\n\n\\end{equation}");
-  return latex + " ";
-}
-
-if (SpeechRecognitionCtor) {
-  recognition = new SpeechRecognitionCtor();
-  recognition.continuous = true;
-  recognition.interimResults = false;
-  recognition.lang = "en-US";
-
-  recognition.onend = () => {
-    speechListening = false;
-    updateCaptureToggleUI();
-  };
-
-  recognition.onerror = (event) => {
-    speechListening = false;
-    updateCaptureToggleUI();
-    console.error("Speech recognition error:", event.error);
-  };
-
-  recognition.onresult = (event) => {
-    const transcript = event.results[event.results.length - 1][0].transcript;
-    console.log("Speech→LaTeX transcript:", transcript);
-
-    chrome.storage.local.get(["geminiApiKey"], (d) => {
-      const hasKey = !!(d.geminiApiKey && String(d.geminiApiKey).trim());
-      if (!hasKey) {
-        injectLatex(localVibeLatex(transcript));
-        return;
-      }
-
-      chrome.runtime.sendMessage({ type: "CONVERT_SPEECH_TO_LATEX", transcript }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.error(chrome.runtime.lastError.message);
-          injectLatex(transcript + " ");
-          return;
-        }
-        if (response?.ok && response.latex) {
-          injectLatex(response.latex + " ");
-        } else {
-          console.warn("Speech→LaTeX:", response?.message || response?.error || "Unknown error");
-          injectLatex(transcript + " ");
-        }
-      });
-    });
-  };
-}
-
-function startSpeechListening() {
-  if (!recognition || speechListening) return;
-  try {
-    recognition.start();
-    speechListening = true;
-    updateCaptureToggleUI();
-    toast("Listening… click Stop dictation or Alt+S to stop.");
-    console.log("Speech→LaTeX: Web Speech listening… Press Alt+S again to stop.");
-  } catch (err) {
-    if (err?.name === "InvalidStateError") {
-      speechListening = true;
-      updateCaptureToggleUI();
-      return;
-    }
-    console.error("Speech→LaTeX: could not start recognition:", err);
-  }
-}
-
-function stopSpeechListening() {
-  if (!recognition || !speechListening) return;
-  try {
-    recognition.stop();
-  } catch (err) {
-    if (err?.name !== "InvalidStateError") console.error("Speech→LaTeX:", err);
-  }
-  speechListening = false;
-  updateCaptureToggleUI();
-}
 
 function toggleSpeechCapture() {
-  if (useMicCapture) {
-    if (whisperRecording) stopWhisperAndSend();
-    else void startWhisperRecording();
-    return;
-  }
+  chrome.storage.local.get(["geminiApiKey"], (d) => {
+    const hasKey = !!(d.geminiApiKey && String(d.geminiApiKey).trim());
+    if (!hasKey) {
+      toast(
+        "Gemini API key required. Add your key in extension options to use speech-to-LaTeX."
+      );
+      console.error(
+        "Speech→LaTeX: Gemini API key required. Add a key in extension options."
+      );
+      return;
+    }
 
-  if (!recognition) {
-    toast(
-      "Speech recognition unavailable. Add a Gemini API key in extension options to record from the mic."
-    );
-    console.error(
-      "Speech→LaTeX: Web Speech API not available. Add a Gemini key in options to use mic capture."
-    );
-    return;
-  }
-
-  if (speechListening) stopSpeechListening();
-  else startSpeechListening();
+    if (isRecording) stopRecordingAndSend();
+    else void startRecording();
+  });
 }
 
 window.addEventListener("keydown", (e) => {

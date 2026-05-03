@@ -36,13 +36,6 @@ Rules for the "latex" string:
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const t = message?.type;
-  if (t === "CONVERT_SPEECH_TO_LATEX") {
-    (async () => {
-      const result = await convertTranscriptToLatex(message.transcript ?? "");
-      sendResponse(result);
-    })();
-    return true;
-  }
   if (t === "AUDIO_TO_LATEX") {
     (async () => {
       const result = await audioToLatex(message.audioBase64 ?? "", message.mimeType ?? "audio/webm");
@@ -226,17 +219,6 @@ async function geminiWithRetries(userParts, opts = {}) {
       "Gemini could not complete the request after retries. Try again in a minute or check API quota.",
     httpStatus: lastErr?.httpStatus,
   };
-}
-
-async function convertTranscriptToLatex(transcript) {
-  const trimmed = typeof transcript === "string" ? transcript.trim() : "";
-  if (!trimmed) {
-    return { ok: false, error: "empty_transcript", message: "No speech detected." };
-  }
-
-  const userText = `Convert this transcript to LaTeX. Output JSON only with this exact shape: {"latex":"<LaTeX string ready to paste>"}.\n\nTranscript:\n${trimmed}`;
-
-  return geminiWithRetries([{ text: userText }], { isAudio: false });
 }
 
 async function audioToLatex(audioBase64, mimeType) {
