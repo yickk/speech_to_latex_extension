@@ -32,13 +32,31 @@ Rules for the "latex" string:
   - "dot x" => \\dot{x}, "double dot x" => \\ddot{x}
 - Transcribe math as spoken; do not substitute a "more standard" formula unless the speech clearly matches it.
 - Plain prose: escape LaTeX specials where needed (% $ & # _ ^).
-- No document preamble; output only the fragment to insert.`;
+- No document preamble; output only the fragment to insert.
+
+CONTEXT AWARENESS:
+When document context is provided (text before/after cursor), use it to maintain consistency:
+- Match existing notation style EXACTLY (e.g., if vectors use \\vec{}, continue that; if \\mathbf{}, use that instead).
+- Maintain capitalization consistency (e.g., if F is used for Force and f for frequency, preserve that distinction).
+- Recognize domain-specific terms and symbols already in use in the document.
+- Adapt to the mathematical style and conventions evident in the surrounding text.
+- If a variable or symbol appears in the context with specific formatting, replicate that formatting EXACTLY, including:
+  * Operator notation (\\hat{} vs plain)
+  * Subscript/superscript patterns (e.g., _{{\\vec{{k}},\\lambda}} vs _{k\\lambda})
+  * Text formatting in subscripts (\\text{{}} vs \\mathrm{{}})
+  * Bra-ket notation style (\\langle | \\rangle vs \\bra{{}} \\ket{{}})
+- When a pattern appears multiple times in context, that is the preferred style.
+- Learn from the context but prioritize what the speaker actually says.`;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const t = message?.type;
   if (t === "AUDIO_TO_LATEX") {
     (async () => {
-      const result = await audioToLatex(message.audioBase64 ?? "", message.mimeType ?? "audio/webm");
+      const result = await audioToLatex(
+        message.audioBase64 ?? "",
+        message.mimeType ?? "audio/webm",
+        message.documentContext ?? null
+      );
       sendResponse(result);
     })();
     return true;
@@ -221,7 +239,7 @@ async function geminiWithRetries(userParts, opts = {}) {
   };
 }
 
-async function audioToLatex(audioBase64, mimeType) {
+async function audioToLatex(audioBase64, mimeType, documentContext = null) {
   const trimmedB64 = typeof audioBase64 === "string" ? audioBase64.trim() : "";
   if (!trimmedB64) {
     return { ok: false, error: "empty_audio", message: "No audio data." };
@@ -229,9 +247,20 @@ async function audioToLatex(audioBase64, mimeType) {
 
   const mime = mimeType && mimeType.trim() ? mimeType.trim() : "audio/webm";
 
-  const userText = `The attached audio is the user dictating mathematics or technical text for LaTeX (Overleaf).
+  let userText = `The attached audio is the user dictating mathematics or technical text for LaTeX (Overleaf).`;
 
-Listen to the audio, transcribe it, and produce correct LaTeX.
+  if (documentContext && (documentContext.before || documentContext.after)) {
+    userText += `\n\nDOCUMENT CONTEXT (for consistency):`;
+    if (documentContext.before) {
+      userText += `\nText before cursor: "${documentContext.before}"`;
+    }
+    if (documentContext.after) {
+      userText += `\nText after cursor: "${documentContext.after}"`;
+    }
+    userText += `\n\nUse this context to match the notation, capitalization, and terminology already in the document.`;
+  }
+
+  userText += `\n\nListen to the audio, transcribe it, and produce correct LaTeX.
 
 Output JSON only with this shape:
 {"latex":"<LaTeX string ready to paste>","transcript":"<what was said, plain text>"}

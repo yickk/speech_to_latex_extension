@@ -40,11 +40,61 @@ function ensureMathMode(text) {
   return wrapped + trailingWhitespace;
 }
 
-function injectLatex(text) {
-  const el =
+function getEditorElement() {
+  return (
     document.querySelector(".ace_text-input") ||
-    document.querySelector("textarea.cm-content") ||
-    document.querySelector('[role="textbox"]');
+    document.querySelector(".cm-content[contenteditable]") ||
+    document.querySelector('[role="textbox"]')
+  );
+}
+
+function extractDocumentContext() {
+  const el = getEditorElement();
+  if (!el) {
+    console.warn("Speech→LaTeX: could not find editor for context extraction.");
+    return null;
+  }
+
+  try {
+    let fullText = "";
+    let cursorPos = 0;
+
+    if (el.classList && el.classList.contains("ace_text-input")) {
+      fullText = el.value || "";
+      cursorPos = el.selectionStart || 0;
+    } else if (el.getAttribute("contenteditable") === "true") {
+      fullText = el.textContent || "";
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        const preRange = range.cloneRange();
+        preRange.selectNodeContents(el);
+        preRange.setEnd(range.startContainer, range.startOffset);
+        cursorPos = preRange.toString().length;
+      }
+    } else {
+      fullText = el.value || el.textContent || "";
+      cursorPos = el.selectionStart || 0;
+    }
+
+    const beforeChars = 700;
+    const afterChars = 300;
+
+    const startPos = Math.max(0, cursorPos - beforeChars);
+    const endPos = Math.min(fullText.length, cursorPos + afterChars);
+
+    const before = fullText.substring(startPos, cursorPos);
+    const after = fullText.substring(cursorPos, endPos);
+
+    return { before, after };
+  } catch (e) {
+    console.warn("Speech→LaTeX: context extraction failed:", e);
+    return null;
+  }
+}
+
+function injectLatex(text) {
+  const el = getEditorElement();
 
   if (!el) {
     console.error("Speech→LaTeX: could not find Overleaf editor input.");
@@ -169,6 +219,8 @@ function stopRecordingAndSend() {
 
     toast("Transcribing and converting to LaTeX…");
 
+    const documentContext = extractDocumentContext();
+
     const reader = new FileReader();
     reader.onloadend = () => {
       const dataUrl = reader.result;
@@ -177,24 +229,31 @@ function stopRecordingAndSend() {
       const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : "";
       if (!base64) return;
 
-      chrome.runtime.sendMessage(
-        { type: "AUDIO_TO_LATEX", audioBase64: base64, mimeType: blobType },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            console.error(chrome.runtime.lastError.message);
-            toast("Extension error — check console.");
-            return;
-          }
-          if (response?.ok && response.latex) {
-            injectLatex(response.latex + " ");
-            toast("Inserted LaTeX.");
-          } else {
-            console.warn("Speech→LaTeX:", response?.message || response?.error || "Unknown error");
-            toast(response?.message || "Could not get LaTeX.");
-            if (response?.transcript) injectLatex(response.transcript + " ");
-          }
+      const message = {
+        type: "AUDIO_TO_LATEX",
+        audioBase64: base64,
+        mimeType: blobType,
+      };
+
+      if (documentContext) {
+        message.documentContext = documentContext;
+      }
+
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error(chrome.runtime.lastError.message);
+          toast("Extension error — check console.");
+          return;
         }
-      );
+        if (response?.ok && response.latex) {
+          injectLatex(response.latex + " ");
+          toast("Inserted LaTeX.");
+        } else {
+          console.warn("Speech→LaTeX:", response?.message || response?.error || "Unknown error");
+          toast(response?.message || "Could not get LaTeX.");
+          if (response?.transcript) injectLatex(response.transcript + " ");
+        }
+      });
     };
     reader.readAsDataURL(blob);
   };
