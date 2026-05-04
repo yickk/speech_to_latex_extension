@@ -102,10 +102,15 @@ function injectLatex(text) {
   }
 
   el.focus();
-  document.execCommand("insertText", false, ensureMathMode(text));
+  const wrappedText = ensureMathMode(text);
+  
+  // Use execCommand - deprecated but still most reliable for Overleaf
+  // @ts-ignore - suppress deprecation warning
+  document.execCommand("insertText", false, wrappedText);
 }
 
-function toast(msg) {
+function toast(msg, options = {}) {
+  const duration = options.duration || 3500;
   let el = document.getElementById("speech-latex-toast");
   if (!el) {
     el = document.createElement("div");
@@ -115,7 +120,7 @@ function toast(msg) {
   el.textContent = msg;
   el.classList.add("visible");
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => el.classList.remove("visible"), 3500);
+  toast._t = setTimeout(() => el.classList.remove("visible"), duration);
 }
 
 function updateCaptureToggleUI() {
@@ -145,6 +150,95 @@ function ensureCaptureToggleButton() {
   updateCaptureToggleUI();
 }
 
+// --- Correction window functions ---
+
+function enableCorrectionWindow(durationMs) {
+  correctionWindowActive = true;
+  
+  if (correctionWindowTimer) {
+    clearTimeout(correctionWindowTimer);
+  }
+  
+  correctionWindowTimer = setTimeout(() => {
+    disableCorrectionWindow();
+  }, durationMs);
+}
+
+function disableCorrectionWindow() {
+  correctionWindowActive = false;
+  if (correctionWindowTimer) {
+    clearTimeout(correctionWindowTimer);
+    correctionWindowTimer = null;
+  }
+}
+
+function deleteLastInsertion() {
+  if (!lastInsertedText) {
+    console.warn("Speech→LaTeX: No text to delete");
+    return false;
+  }
+  
+  const el = getEditorElement();
+  if (!el) {
+    console.warn("Speech→LaTeX: No editor element found for deletion");
+    return false;
+  }
+  
+  el.focus();
+  
+  const textLength = lastInsertedText.length;
+  console.log(`Speech→LaTeX: Attempting to delete ${textLength} characters: "${lastInsertedText}"`);
+  
+  // Try multiple approaches - Overleaf editors are finicky
+  
+  // Approach 1: Use execCommand delete (most reliable)
+  for (let i = 0; i < textLength; i++) {
+    // @ts-ignore - suppress deprecation warning
+    document.execCommand('delete', false, null);
+  }
+  
+  lastInsertedText = null;
+  console.log("Speech→LaTeX: Deletion complete");
+  return true;
+}
+
+function handleRetry() {
+  if (!correctionWindowActive) return;
+  
+  const deleted = deleteLastInsertion();
+  disableCorrectionWindow();
+  
+  if (deleted) {
+    toast("Undone. Starting new recording...");
+    // Auto-trigger dictation after a brief delay
+    setTimeout(() => {
+      toggleSpeechCapture();
+    }, 500);
+  } else {
+    toast("Could not undo. Try Cmd+Z manually.");
+  }
+}
+
+function handleUndo() {
+  if (!correctionWindowActive) return;
+  
+  const deleted = deleteLastInsertion();
+  disableCorrectionWindow();
+  
+  if (deleted) {
+    toast("Undone.");
+  } else {
+    toast("Could not undo. Try Cmd+Z manually.");
+  }
+}
+
+function handleAccept() {
+  if (!correctionWindowActive) return;
+  
+  disableCorrectionWindow();
+  toast("Accepted.");
+}
+
 
 // --- Audio recording (MediaRecorder → Gemini multimodal) ---
 
@@ -152,6 +246,12 @@ let isRecording = false;
 let mediaStream = null;
 let mediaRecorder = null;
 let mediaChunks = [];
+
+// --- Correction window state ---
+let correctionWindowActive = false;
+let correctionWindowTimer = null;
+let lastInsertion = null;
+let lastInsertedText = null;
 
 function pickAudioMimeType() {
   const candidates = ["audio/webm;codecs=opus", "audio/webm"];
@@ -192,6 +292,9 @@ async function startRecording() {
   };
   mediaRecorder.start();
   isRecording = true;
+  
+  disableCorrectionWindow();
+  
   updateCaptureToggleUI();
   toast("Recording… click Stop dictation or Alt+S to send audio to Gemini.");
   console.log("Speech→LaTeX: recording… Press Alt+S or Stop again to finish.");
@@ -246,8 +349,22 @@ function stopRecordingAndSend() {
           return;
         }
         if (response?.ok && response.latex) {
+          const wrappedLatex = ensureMathMode(response.latex);
+          const textToInsert = wrappedLatex + " ";
+          
+          lastInsertion = {
+            latex: response.latex,
+            transcript: response.transcript || null,
+            timestamp: Date.now()
+          };
+          
+          lastInsertedText = textToInsert;
+          
           injectLatex(response.latex + " ");
-          toast("Inserted LaTeX.");
+          
+          enableCorrectionWindow(10000);
+          
+          toast("✓ Inserted • R=retry U=undo (10s)", { duration: 10000 });
         } else {
           console.warn("Speech→LaTeX:", response?.message || response?.error || "Unknown error");
           toast(response?.message || "Could not get LaTeX.");
@@ -289,6 +406,30 @@ window.addEventListener("keydown", (e) => {
   if (!e.altKey || e.code !== "KeyS" || e.repeat) return;
   e.preventDefault();
   toggleSpeechCapture();
+});
+
+window.addEventListener("keydown", (e) => {
+  if (!correctionWindowActive) return;
+  
+  if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+  
+  const target = e.target;
+  if (target && target.tagName === 'INPUT' && target.type === 'text') return;
+  
+  switch (e.key.toLowerCase()) {
+    case 'r':
+      e.preventDefault();
+      handleRetry();
+      break;
+    case 'u':
+      e.preventDefault();
+      handleUndo();
+      break;
+    case 'enter':
+      e.preventDefault();
+      handleAccept();
+      break;
+  }
 });
 
 ensureCaptureToggleButton();
