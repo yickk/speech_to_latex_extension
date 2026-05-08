@@ -35,6 +35,26 @@ button.speech-latex-toggle {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
+button.speech-latex-redo {
+  position: fixed;
+  bottom: 16px;
+  left: 148px;
+  z-index: 2147483647;
+  padding: 0.5rem 0.85rem;
+  font: 13px/1.2 system-ui, sans-serif;
+  font-weight: 600;
+  color: #fff;
+  background: #1f6feb;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+button.speech-latex-redo:hover {
+  filter: brightness(1.06);
+}
+
 button.speech-latex-toggle:hover {
   filter: brightness(1.06);
 }

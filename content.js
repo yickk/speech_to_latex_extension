@@ -40,7 +40,42 @@ function ensureMathMode(text) {
   return wrapped + trailingWhitespace;
 }
 
-function injectLatex(text) {
+function normalizeDictationOutput(rawText) {
+  const source = typeof rawText === "string" ? rawText : "";
+  const trailingWhitespaceMatch = source.match(/\s+$/);
+  const trailingWhitespace = trailingWhitespaceMatch ? trailingWhitespaceMatch[0] : "";
+  let text = source.slice(0, source.length - trailingWhitespace.length).trim();
+  if (!text) return source;
+
+  const punctuationMap = [
+    { re: /\bcomma\b/gi, token: "," },
+    { re: /\b(?:period|full stop)\b/gi, token: "." },
+    { re: /\bquestion mark\b/gi, token: "?" },
+    { re: /\bexclamation mark\b/gi, token: "!" },
+    { re: /\bcolon\b/gi, token: ":" },
+    { re: /\bsemicolon\b/gi, token: ";" },
+  ];
+  punctuationMap.forEach(({ re, token }) => {
+    text = text.replace(re, token);
+  });
+
+  text = text.replace(/\s+([,.:;!?])/g, "$1");
+  text = text.replace(/([,.:;!?])(?!\s|$)/g, "$1 ");
+  text = text.replace(/\s{2,}/g, " ");
+
+  // Wrap plain single-letter variables after common physics/math nouns.
+  text = text.replace(
+    /\b(momentum|energy|mass|charge|field|coordinate|variable|parameter)\s+([a-zA-Z])\b/g,
+    (_m, noun, variable) => `${noun} $${variable}$`
+  );
+
+  // Restore sentence capitalization for prose-style dictation output.
+  text = text.replace(/(^|[.!?]\s+)([a-z])/g, (m, prefix, c) => `${prefix}${c.toUpperCase()}`);
+
+  return text + trailingWhitespace;
+}
+
+function injectLatex(text, options = {}) {
   const el =
     document.querySelector(".ace_text-input") ||
     document.querySelector("textarea.cm-content") ||
@@ -52,7 +87,17 @@ function injectLatex(text) {
   }
 
   el.focus();
-  document.execCommand("insertText", false, ensureMathMode(text));
+  const shouldNormalize = options?.source === "dictation";
+  const preparedText = shouldNormalize ? normalizeDictationOutput(text) : text;
+  const insertedText = ensureMathMode(preparedText);
+  const inserted = document.execCommand("insertText", false, insertedText);
+  if (inserted) {
+    lastExtensionInsert = {
+      text: insertedText,
+      insertedAt: Date.now(),
+      canUndo: true,
+    };
+  }
 }
 
 function toast(msg) {
@@ -93,11 +138,29 @@ function ensureCaptureToggleButton() {
     toggleSpeechCapture();
   });
   document.body.appendChild(btn);
+  ensureRedoDictationButton();
   updateCaptureToggleUI();
+}
+
+function ensureRedoDictationButton() {
+  if (document.getElementById("speech-latex-redo-dictate")) return;
+  const btn = document.createElement("button");
+  btn.id = "speech-latex-redo-dictate";
+  btn.type = "button";
+  btn.className = "speech-latex-redo";
+  btn.textContent = "Redo + dictate";
+  btn.setAttribute("aria-label", "Redo last insertion and start dictation");
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    redoLatestAndStartDictation();
+  });
+  document.body.appendChild(btn);
 }
 
 /** When true, Alt+S records mic audio and sends it to Gemini for LaTeX; otherwise Web Speech API. */
 let useMicCapture = false;
+let lastExtensionInsert = null;
 
 function refreshMicPreference() {
   chrome.storage.local.get(["geminiApiKey"], (d) => {
@@ -207,12 +270,12 @@ function stopWhisperAndSend() {
             return;
           }
           if (response?.ok && response.latex) {
-            injectLatex(response.latex + " ");
+            injectLatex(response.latex + " ", { source: "dictation" });
             toast("Inserted LaTeX.");
           } else {
             console.warn("Speech→LaTeX:", response?.message || response?.error || "Unknown error");
             toast(response?.message || "Could not get LaTeX.");
-            if (response?.transcript) injectLatex(response.transcript + " ");
+            if (response?.transcript) injectLatex(response.transcript + " ", { source: "dictation" });
           }
         }
       );
@@ -397,21 +460,21 @@ if (SpeechRecognitionCtor) {
     chrome.storage.local.get(["geminiApiKey"], (d) => {
       const hasKey = !!(d.geminiApiKey && String(d.geminiApiKey).trim());
       if (!hasKey) {
-        injectLatex(localVibeLatex(transcript));
+        injectLatex(localVibeLatex(transcript), { source: "dictation" });
         return;
       }
 
       chrome.runtime.sendMessage({ type: "CONVERT_SPEECH_TO_LATEX", transcript }, (response) => {
         if (chrome.runtime.lastError) {
           console.error(chrome.runtime.lastError.message);
-          injectLatex(transcript + " ");
+          injectLatex(transcript + " ", { source: "dictation" });
           return;
         }
         if (response?.ok && response.latex) {
-          injectLatex(response.latex + " ");
+          injectLatex(response.latex + " ", { source: "dictation" });
         } else {
           console.warn("Speech→LaTeX:", response?.message || response?.error || "Unknown error");
-          injectLatex(transcript + " ");
+          injectLatex(transcript + " ", { source: "dictation" });
         }
       });
     });
@@ -445,6 +508,95 @@ function stopSpeechListening() {
   }
   speechListening = false;
   updateCaptureToggleUI();
+}
+
+function isCaptureActive() {
+  return useMicCapture ? whisperRecording : speechListening;
+}
+
+function startSpeechCapture() {
+  if (useMicCapture) {
+    if (!whisperRecording) void startWhisperRecording();
+    return;
+  }
+  if (!recognition) {
+    toast(
+      "Speech recognition unavailable. Add a Gemini API key in extension options to record from the mic."
+    );
+    console.error(
+      "Speech→LaTeX: Web Speech API not available. Add a Gemini key in options to use mic capture."
+    );
+    return;
+  }
+  if (!speechListening) startSpeechListening();
+}
+
+function removeMostRecentExtensionInsertion() {
+  if (!lastExtensionInsert?.canUndo) return false;
+  const aceHost = document.querySelector(".ace_editor");
+  const aceApi = window.ace;
+  if (aceHost && aceApi && typeof aceApi.edit === "function") {
+    try {
+      const aceEditor = aceApi.edit(aceHost);
+      if (aceEditor && typeof aceEditor.undo === "function") {
+        aceEditor.focus();
+        aceEditor.undo();
+        lastExtensionInsert = null;
+        return true;
+      }
+    } catch (e) {
+      console.warn("Speech→LaTeX: Ace undo fallback failed:", e);
+    }
+  }
+
+  const editorInput =
+    document.querySelector(".ace_text-input") ||
+    document.querySelector("textarea.cm-content") ||
+    document.querySelector('[role="textbox"]');
+  if (!editorInput) return false;
+  editorInput.focus();
+
+  // Overleaf editors respond more consistently to keyboard undo than execCommand("undo").
+  const key = "z";
+  const code = "KeyZ";
+  editorInput.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key,
+      code,
+      bubbles: true,
+      cancelable: true,
+      metaKey: true,
+    })
+  );
+  editorInput.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key,
+      code,
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    })
+  );
+
+  const execUndo = document.execCommand("undo");
+  if (!execUndo) return false;
+
+  lastExtensionInsert = null;
+  return true;
+}
+
+function redoLatestAndStartDictation() {
+  if (isCaptureActive()) {
+    toast("Stop dictation before using redo + dictate.");
+    return;
+  }
+  const removed = removeMostRecentExtensionInsertion();
+  if (!removed) {
+    toast("No recent extension insertion to remove. Starting dictation.");
+  } else {
+    toast("Removed latest insertion. Listening…");
+  }
+  startSpeechCapture();
 }
 
 function toggleSpeechCapture() {

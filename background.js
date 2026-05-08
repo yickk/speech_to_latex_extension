@@ -12,9 +12,15 @@ Always respond with ONLY valid JSON (no markdown fences, no commentary). The JSO
 Rules for the "latex" string:
 - Ready to paste into an editor: correct LaTeX commands and math mode.
 - Prefer inline math with \\( ... \\) or $ ... $ for short fragments; use \\[ ... \\] or equation environments when the speaker clearly wants a displayed equation.
+- For prose sentences, output natural written English capitalization and punctuation (sentence starts capitalized, proper commas/periods).
+- If speech includes spoken punctuation words (for example "comma", "period", "full stop", "question mark", "colon", "semicolon"), convert them to punctuation marks instead of leaving the words.
 - Use \\left( \\right), \\left[ \\right], \\left\\{ \\right\\} for scalable brackets when nesting or for tall expressions.
 - Fractions: \\frac{numerator}{denominator}. Subscripts/superscripts: x_1, x^2, x_{10}, x^{n+1}.
 - Greek letters by name (alpha → \\alpha). Functions: \\sin, \\cos, \\log, \\lim, \\sum, \\int with limits as spoken.
+- Preserve variable case exactly as intended by speech. For single-letter variables, default to lowercase unless the user explicitly says "capital" or "uppercase".
+- Do not silently promote lowercase variables to uppercase (g stays g, n stays n).
+- If the spoken symbol is "varphi", output \\varphi (not \\phi).
+- In prose, wrap symbolic variables and math fragments in inline math delimiters automatically (for example: "incoming momentum p" -> "incoming momentum $p$"; "energy E equals m c squared" -> "$E = mc^2$" where appropriate).
 - Matrices: bmatrix, pmatrix, vmatrix; aligned / cases when appropriate.
 - Before differentials (dx, dy, dt, …), use \\, (thin space) when standard.
 - Physics notation defaults:
@@ -30,6 +36,7 @@ Rules for the "latex" string:
   - "h bar" => \\hbar
   - "del" => \\nabla
   - "dot x" => \\dot{x}, "double dot x" => \\ddot{x}
+- Keep punctuation-tight math formatting unless spacing is semantically needed (for example, output $-\\frac{g}{n!}\\varphi^n$ without inserting extra spaces).
 - Transcribe math as spoken; do not substitute a "more standard" formula unless the speech clearly matches it.
 - Plain prose: escape LaTeX specials where needed (% $ & # _ ^).
 - No document preamble; output only the fragment to insert.`;
@@ -234,7 +241,13 @@ async function convertTranscriptToLatex(transcript) {
     return { ok: false, error: "empty_transcript", message: "No speech detected." };
   }
 
-  const userText = `Convert this transcript to LaTeX. Output JSON only with this exact shape: {"latex":"<LaTeX string ready to paste>"}.\n\nTranscript:\n${trimmed}`;
+  const userText = `Convert this transcript to LaTeX suitable for Overleaf.
+Preserve natural sentence capitalization and punctuation for prose.
+Automatically use inline math delimiters for symbolic variables/expressions that appear in prose when needed.
+Output JSON only with this exact shape: {"latex":"<LaTeX string ready to paste>"}.
+
+Transcript:
+${trimmed}`;
 
   return geminiWithRetries([{ text: userText }], { isAudio: false });
 }
